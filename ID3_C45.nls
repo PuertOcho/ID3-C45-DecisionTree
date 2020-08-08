@@ -1,0 +1,555 @@
+;;----------------------------------- ID3 -----------------------------------------
+;; Library to create Decision Trees by using ID3 algorithm
+;;---------------------------------------------------------------------------------
+extensions [matrix rnd]
+
+;; It works on datasets given as Dataframes (rows of data with some fixed structure 
+;; given by a header). In this version it works only with categorical (not numerical)
+;; attributes.
+
+;; Family of nodes that will build the Decision Tree
+globals[
+aristaActual ;Se guarda la arista de la iteración actual
+categoria ;Se guarda la categoria de la iteración actual
+filaActual ;Con las dos variables anteriores conseguimos la fila actual
+control ;Para controlar la primera iteración del primer parámetro
+verdaderoNegativo ;Métrica de la matriz  
+exactitud ;Métrica de la matriz
+sensibilidad ;Métrica de la matriz
+especifidad ;Métrica de la matriz
+precisionAC ;Métrica de la matriz
+]
+
+breed [ID3:nodes ID3:node]
+
+ID3:nodes-own [
+  ID3:node-type ; Types: 
+                ;   0 -> Start, 
+                ;   1 -> Decision, 
+                ;   2 -> Answer
+  ID3:value     ; The value in the node depends on the type:
+                ;   0 -> Attribute to classify
+                ;   1 -> Splitting Attribute 
+                ;   2 -> Classification result
+  ID3:porcentaje;   Indica el porcentaje en caso de que lo haya
+  depth         ; For use with LayoutSpace.nls
+]
+
+;; Family of links that will build the Decision Tree
+directed-link-breed [ID3:links ID3:link]
+ID3:links-own [ID3:att_value]
+
+;; Dataframes ar data matrix where the first row is the head. For our ID3, last column is 
+;; the attribute to classify.
+
+; Entropy of a list (according to the frequency of their elements)
+to-report entropy [l]
+  ; Compute the relative frequency of the elements
+  let l2 map [ x -> frec x l ] (remove-duplicates l)
+  ; Apply entropy to the list of frequencies
+  report sum map [ x -> ifelse-value (x = 0)[0][(-1) * x * log x 2] ] l2
+end
+
+; Report for relative frequency of an element in a list
+to-report frec [el L]
+  report (length (filter [ x -> x = el ] L)) / (length L)
+end
+
+; Report Relative Entropy of an attribute in a dataframe
+to-report entropy-rel [df atr]
+  ; Extract the list of attributes from dataframe
+  let atrs first df
+  ; Extract values of the attribute
+  let val  bf (DF:column atr df)
+  ; Take the index of the associated column
+  let p position atr atrs
+  ; Acumulador para calcular la entropia relativa
+  let ent-rel 0
+  ; Para cada posible valor del atributo:
+  foreach remove-duplicates val
+  [ x ->
+    ; Compute the relative frec of x
+    let f frec x val
+    ; Take only rows with x in this column, and build a new dataframe with those rows
+    let df2 (fput (first df) filter [ y -> (item p y) = x ] (bf df))
+    ; Compute the entropy of the last column in this new dataframe
+    let ex entropy  bf (DF:column (last atrs) df2)
+    ; Accumulate it
+    set ent-rel ent-rel + f * ex
+  ]
+  report ent-rel
+end
+
+;; Gain Information in a dataframe for an attribute
+to-report GI [df atr]
+  let atrs first df
+  report (entropy bf (DF:column (last atrs) df)) - (entropy-rel df atr)
+end
+
+; Report the attribute with max Gain Information in a dataframe
+to-report Max-GI [df]
+  let atr1 map [ x -> (list x (GI df x) ) ] (bl first df)
+  report first first sort-by [ [x y] -> (last x) > (last y) ] atr1
+end
+
+; Report the attribute with max Gain Information Ratio in a dataframe
+to-report Max-GR [df]
+  let atr1 map [ x -> (list x (ifelse-value ((entropy bf DF:column x df) = 0) [0] [(GI df x) / (entropy bf DF:column x df)])) ] (bl first df)
+  report first first sort-by [ [x y] -> (last x) > (last y) ] atr1
+end
+
+;; Main procedure to create the Decision Tree with ID3
+;;       df : Dataframe
+;; Reports the main root node 
+;; (later, we can ask this node to evaluate new data)
+
+to-report ID3:ID3 [df att-target]
+  let rep nobody
+
+  ; Move the target attribute to the last column  
+  let target DF:column att-target df
+  set df DF:remove att-target df
+  set df DF:add-column att-target df (bf target)
+
+  ask ID3:nodes [set ID3:porcentaje 0] ;para poder comparar luego si es distinto de 0 y tener en cuenta el porcentaje
+  
+  create-ID3:nodes 1 [
+    set ID3:node-type 0
+    set ID3:value (last first df)
+    set filaActual [1]
+    set control 0
+    create-ID3:link-to (ID3:ID3_aux df) [set ID3:att_value ""]
+    set rep self
+    set depth 1
+  ]
+;  ID3:confusionmatrix
+  report rep
+end
+
+to-report juntaCadena[lis1 lis2]
+report (map [[x y] -> list x y] lis1 lis2)
+end  
+
+
+
+;----------------------------------------------------------------------------MATRIZ DE CONFUSIÓN----------------------------------------------------------------------------ABAJO
+
+
+
+to-report ID3_mConfusion[df]
+  let tam DF:size DataFrameTest
+  let auxiliarMat DF:first (first tam) DataFrameTest
+;-------------------------------------------------------------------------
+  let ult ((length (item  0 df)) - 1) ;numero de categorias a clasificar
+  let listCategorias [] 
+  foreach df [x ->
+   set listCategorias lput (item ult x) listCategorias
+  ] 
+  set listCategorias remove-duplicates listCategorias 
+  let numCategorias (length listCategorias) - 1  ;numero de elementos de clasificacion
+;-------------------------------------------------------------------------
+  
+  set listCategorias remove-item 0 listCategorias ;lista con las cateogrias de los datos
+  ;quito la parte de los nombres q indican de q es cada columna, nos interesan solo las filas, no necesitamos los nombres de las columnas
+  let cabecera item 0 auxiliarMat
+  set auxiliarMat remove-item 0 auxiliarMat
+  let i 0
+  let resultados[]
+  repeat (length auxiliarMat) [ 
+    let x reduce sentence item i auxiliarMat
+    let z juntaCadena cabecera x
+    ask decision-tree [ set resultados lput (ID3:evaluate (juntaCadena cabecera x)) resultados]
+    set i i + 1 
+  ]
+  let listaProv []
+      foreach auxiliarMat [x -> 
+      set listaProv lput (word last x) listaProv
+      ]
+  let j 0
+  let varDiferentes []
+  repeat (length listaProv ) [
+    if (not member? (item j listaProv)  varDiferentes) [
+    set varDiferentes lput (item j listaProv) varDiferentes ;veo q valores de retorno diferentes tenemos
+    ]
+    set j j + 1
+  ]
+  set varDiferentes (length varDiferentes)
+  
+  
+  ;añadimos los datos a la matriz de confusion
+  let m matrix:make-constant numCategorias numCategorias 0
+  
+  let a "false" ;para el elemento de x predicho
+  let b "false" ;para el elemento de x real
+  let c 0 ;para la posicion de x predicho
+  let d 0 ;para la posicion de x real
+
+  print (word "numCategorias:"numCategorias)
+  set j 0
+  repeat (length listaProv ) [
+    
+    set a (item j listaProv)
+    set b (item j resultados)
+    
+    set c (position a listCategorias)
+    set d (position b listCategorias)
+    
+    matrix:set m d c ((matrix:get m d c) + 1)
+  
+    set j j + 1
+  ] 
+
+  report m
+end
+
+to mostrar-Matriz-Confusion [m]
+  
+  output-print "Matriz de confusión:\n"
+  
+  ifelse (first matrix:dimensions m = 2) [ ;Si la matriz tiene dimension mayor que 2, vamos a representar los valores en una matriz simple
+  let a matrix:get m 0 0 ;; what number is in row 1, column 2?
+  let b matrix:get m 0 1 
+  let c matrix:get m 1 0 
+  let d matrix:get m 1 1 
+  
+  set verdaderoNegativo  ( a / ( a + b ))
+  set exactitud          ( d / ( c + d ) )
+  set sensibilidad       ( d / ( d + c ) )
+  set especifidad        ( a / ( a +  b ) )
+  set precisionAC        ( (a + d) / ( a +  b + c + d) )
+   
+  
+  output-print (word  "│              │   negativo   │   positivo   │" )
+  output-print (word  "├──────────────┼──────────────┼──────────────┼──────────────┤" )
+  output-print (word  "│   negativo   │      "a"       │       "b"      │       "precision verdaderoNegativo 2"      │" )
+  output-print (word  "│              │              │              │      VN      │" )
+  output-print (word  "├──────────────┼──────────────┼──────────────┼──────────────┤" )
+  output-print (word  "│   positivo   │      "c"       │       "d"      │       "precision exactitud 2"      │" )
+  output-print (word  "│              │              │              │   exactitud  │" )
+  output-print (word  "├──────────────┼──────────────┼──────────────┼──────────────┤" )
+  output-print (word  "│              │      "precision sensibilidad 2"       │       "precision especifidad 2"      │      "precision  precisionAC 2"     │" )
+  output-print (word  "│              │ sensibilidad │  especifidad │   precision  │" )
+  output-print (word  "└──────────────┴──────────────┴──────────────┴──────────────┘" )
+  
+  print (word  "Verdadero Negativo: "precision verdaderoNegativo 2)
+  print (word  "Exactitud: "precision exactitud 2)
+  print (word  "Sensibilidad: "precision sensibilidad 2)
+  print (word  "Especifidad: "precision especifidad 2)
+  print (word  "Precision: "precision precisionAC 2)
+  ][
+    
+  output-print matrix:pretty-print-text m
+    
+    
+  let sumaDiagonal 0
+  let sumaTotal 0
+  let i 0
+  let j 0
+  repeat (first matrix:dimensions m )[
+     repeat (first matrix:dimensions m )[
+       set sumaTotal ((matrix:get m j i) + sumaTotal)
+      if(i = j)[ set sumaDiagonal ((matrix:get m j i) + sumaDiagonal) ]
+      
+  ;    print (word "i: "i "j: "j)
+      set j j + 1
+    ] 
+    set i i + 1
+    set j 0
+  ]
+  
+  let precisionACParaN (sumaDiagonal / sumaTotal)
+  ;print (word "precisionACParaN: "precisionACParaN)
+    
+  output-print (word "\nPrecision: "precision precisionACParaN 2)
+  ]
+  
+  
+  
+  
+end 
+
+
+
+
+;----------------------------------------------------------------------------MATRIZ DE CONFUSIÓN----------------------------------------------------------------------------ARRIBA
+
+
+
+; ID3 Algorithm recursive.
+;  Diferenciate between 
+;                   Answer-node (it is classified)
+;               and Decision-node (to be classified)
+;  Returns the node and, if it is Decision, then it generates the branches
+;  and resursively call itself with the new dataframes.
+to-report ID3:ID3_aux [df]
+  let r nobody
+  let finales DF:column (last first df) df
+
+  ifelse ID3:classified? df
+  [
+    hatch-ID3:nodes 1
+    [
+      set ID3:node-type 2
+      set ID3:value (word last last df)
+      ;set categoria (word last last df)
+      set r self
+      set depth depth + 1
+    ]
+  ]
+  [
+    
+    
+    
+    ;----------------------------------------------------------------------------------------------------PRIMER PARÁMETRO----------------------------------------------------------------------------------------------------ABAJO
+    
+    
+    
+    if (length filaActual < minimum_size and control = 1) [
+      
+    ;Hago lo mismo que en el parámetro 1, todo basicamente para imprimir los resultados bien
+    let listaProv []
+      ;Pongo en una lista provisional el valor de retorno de estas categorias truncadas, con esto me refiero que cojo la pregunta general, es decir, la de ¿Se juega a golf?
+      ;que corresponde con la ultima columna en los datos "PlayGolf" y puede ser true o false. En todos los datos vamos a cuestionar siempre la ultima columna, con esto quiero
+      ;decir, que siempre la pregunta general va a ser la ultima columna de los datos.
+      foreach filaActual [x -> 
+      set listaProv lput (word last x) listaProv 
+      ]
+      
+      ;La ordeno para identificar posteriormente los elementos mas facil
+      set listaProv sort listaProv
+      
+      ;Necesitamos saber cuantos valores de la pregunta general se pueden devolver, en este caso son solo 2, true/false, pero en otros problemas se pueden dar más por lo que
+      ;lo tenemos que generalizar.
+      let i 0
+      let varDiferentes []
+      
+      ;Basicamente voy metiendo en una lista los valores que no estén dentro de la lista provisional, es decir, al principio true no está, pues lo metemos, luego al iterar
+      ;si nos encontramos otra vez el true ya no lo metemos ya que con "member?" podemos comprobar eso, sin embargo si encontramos el false si lo metemos y ya tendriamos
+      ;los dos valores en "varDiferentes".
+      repeat (length listaProv) [
+        if (not member? (item i listaProv)  varDiferentes) [
+        set varDiferentes lput (item i listaProv) varDiferentes ;veo q valores de retorno diferentes tenemos
+        ]
+        set i i + 1
+      ]
+      ;Cuento en la lista provisional de antes cuantos de cada valor diferente hay en la lista, para poder hacer los porcentajes, es decir estoy contando cuantas filas con
+      ;igual categoría tienen true y cuantas false en el ejemplo de antes (PlayGolf).
+      let valores []
+      let contar 0
+      foreach varDiferentes [ x -> 
+        set contar (filter [ j -> j = x] listaProv)
+        set valores lput contar valores ; meto las cuentas en una lista y vamos a poder identificar los valores ya que tienen el mismo indice q varDiferentes
+        set contar 0
+      ]
+    hatch-ID3:nodes 1
+    [
+      set ID3:node-type 2
+      let final ""
+      let iter 0
+      let listaV [] ;para el evaluate luego
+        repeat (length varDiferentes) [
+          set final (word "|" final (item iter varDiferentes) ": " (precision ((length (item iter valores)) * 100 / length (reduce se valores) ) 2) " %" "||") ; hago la cadena que mostrare debajo de cada nodo q esta truncado
+          set listaV lput (((length (item iter valores)) * 100 / length (reduce se valores) )) listaV
+          set iter iter + 1
+        ]
+      let resul juntaCadena varDiferentes listaV ;contiene el porcentaje junto al tipo de retorno pej [20 verde] [30 azul] [50 rojo]..  
+      set ID3:value final
+      set ID3:porcentaje resul
+      set r self
+      set depth depth + 1
+    ]
+    report r
+  ]
+    ;print (word categoria "  categoria")
+    ;print "\n"
+    ;print (word categoria "  categoria")
+    
+    ;----------------------------------------------------------------------------------------------------PRIMER PARÁMETRO----------------------------------------------------------------------------------------------------ARRIBA
+    
+    
+    
+    let mx Max-GI df
+    
+    
+    ;if (control = 0) [
+    ;set filaActual (DF:filter-att DataFrame categoria aristaActual)
+    ;set filaActual remove-item 0 filaActual
+    ;]
+    ;----------------------------------------------------------------------------------------------------SEGUNDO PARÁMETRO----------------------------------------------------------------------------------------------------ABAJO
+    ;Si la profundidad es igual a "depth" + 1 significa que lo siguiente que salga en la rama tiene que ser una hoja, luego tenemos que hacer algo para que no siga
+    ;poniendo mas categorias abajo ya que nos pasariamos del limite profundidad.
+    if (profundidad - 1 = depth) [
+      let listaProv []
+      ;Pongo en una lista provisional el valor de retorno de estas categorias truncadas, con esto me refiero que cojo la pregunta general, es decir, la de ¿Se juega a golf?
+      ;que corresponde con la ultima columna en los datos "PlayGolf" y puede ser true o false. En todos los datos vamos a cuestionar siempre la ultima columna, con esto quiero
+      ;decir, que siempre la pregunta general va a ser la ultima columna de los datos.
+      foreach filaActual [x -> 
+      set listaProv lput (word last x) listaProv 
+      ]
+      ;La ordeno para identificar posteriormente los elementos mas facil
+      set listaProv sort listaProv
+      
+      ;Necesitamos saber cuantos valores de la pregunta general se pueden devolver, en este caso son solo 2, true/false, pero en otros problemas se pueden dar más por lo que
+      ;lo tenemos que generalizar.
+      let i 0
+      let varDiferentes []
+      
+      ;Basicamente voy metiendo en una lista los valores que no estén dentro de la lista provisional, es decir, al principio true no está, pues lo metemos, luego al iterar
+      ;si nos encontramos otra vez el true ya no lo metemos ya que con "member?" podemos comprobar eso, sin embargo si encontramos el false si lo metemos y ya tendriamos
+      ;los dos valores en "varDiferentes".
+      repeat (length listaProv) [
+        if (not member? (item i listaProv)  varDiferentes) [
+        set varDiferentes lput (item i listaProv) varDiferentes ;veo q valores de retorno diferentes tenemos
+        ]
+        set i i + 1
+      ]
+      
+      ;Cuento en la lista provisional de antes cuantos de cada valor diferente hay en la lista, para poder hacer los porcentajes, es decir estoy contando cuantas filas con
+      ;igual categoría tienen true y cuantas false en el ejemplo de antes (PlayGolf).
+      let valores []
+      let contar 0
+      foreach varDiferentes [ x -> 
+        set contar (filter [ j -> j = x] listaProv)
+        set valores lput contar valores ; meto las cuentas en una lista y vamos a poder identificar los valores ya que tienen el mismo indice q varDiferentes
+        set contar 0
+      ]
+
+      ;Creamos una hoja con los porcentajes
+      hatch-ID3:nodes 1[
+      set ID3:node-type 2
+      let final ""
+      let iter 0
+      let listaV [] ;para el evaluate luego
+        repeat (length varDiferentes) [
+          set final (word "|" final (item iter varDiferentes) ": " (precision ((length (item iter valores)) * 100 / length (reduce se valores) ) 2) " %" "||") ; hago la cadena que mostrare debajo de cada nodo q esta truncado
+          set listaV lput (((length (item iter valores)) * 100 / length (reduce se valores) )) listaV
+          set iter iter + 1
+        ]
+      let resul juntaCadena varDiferentes listaV ;contiene el porcentaje junto al tipo de retorno pej [20 verde] [30 azul] [50 rojo]..
+      set ID3:value final
+      set ID3:porcentaje resul
+      set r self
+      set depth depth + 1
+      ]
+      report r]
+    
+    
+    
+    ;----------------------------------------------------------------------------------------------------SEGUNDO PARÁMETRO----------------------------------------------------------------------------------------------------ARRIBA
+    
+    
+    
+    hatch-ID3:nodes 1
+    [
+      set ID3:node-type 1
+      set ID3:value mx
+      set r self
+      ;Para saber en que categoría estoy iterando para hacer el truncamiento, es decir, a partir de esta categoria voy a dar los porcentajes que salen abajo al truncar
+      ;ya que no puedo seguir poniendo mas categorias hacia abajo ya que el árbol tendría mas profundidad de la que le hayamos puesto, es muy importante saber que no todas las
+      ;categorias de aqui nos interesan, solamente las que la profundidad "depth" sobrepase el limite que hayamos puesto nosotros en el parámetro que hemos añadido.
+      set depth depth + 1
+      foreach (remove-duplicates bf (DF:column mx df))
+      [ x ->
+       set categoria mx ;Guardo la categoría que se está iterando
+       set aristaActual x ;Para saber en cuales de las aristas me encuentro iterando, es decir, una de las aristas de la categoria actual
+       set control 1 ;Para controlar la primera ejecución en el primer parámetro
+       set filaActual (DF:filter-att DataFrame categoria aristaActual) ;Contiene las filas de las categorias truncadas que corresponden a una arista actual en el caso de ejecutar el data de "PlayGolf"
+       set filaActual remove-item 0 filaActual ;Quito la parte de los nombres q indican de q es cada columna, nos interesan solo las filas, no necesitamos los nombres de las columnas
+        create-ID3:link-to (ID3:ID3_aux DF:filter-att df mx x)
+        [
+          set ID3:att_value x
+        ]
+      ]
+    ]
+  ]
+  report r
+end
+
+; The C4.5 Algorithm can be obtained from standard ID3 by previously transforming the numerical
+; attributes to categorical decisions.
+to-report ID3:C4.5 [df target-att Num-att]
+  set df (ID3:num2att df Num-att)
+  report ID3:ID3 df target-att
+end
+
+
+; Reports if a dataframe is classified or not
+to-report ID3:classified? [df]
+  let clas (last first df)
+  let val bf (DF:column clas df)
+  let vals length remove-duplicates val
+  report ifelse-value (vals = 1) [true] [false]
+end
+
+; Format the ID3 network 
+to ID3:format
+  ask ID3:nodes [
+    set shape (item ID3:node-type ["circle" "decision" "square 2"])
+    set color (item ID3:node-type (list (red + 1) (blue + 2) (green + 2)))
+    set size (item ID3:node-type [3 4 2])
+    set label ID3:value
+    set label-color black
+  ]
+  ask ID3:links [
+    set color gray + 2
+    set label ID3:att_value
+    set label-color gray - 2
+  ]
+end
+
+; Reports to evaluate a Decision Tree on new data
+; It must be called from an ID3:node 
+to-report ID3:evaluate [datum]
+  ifelse ID3:node-type = 0
+  [report [ID3:evaluate datum] of one-of out-ID3:link-neighbors]
+  [ifelse ID3:node-type = 2
+    [
+      if ID3:porcentaje != 0 and (not empty? ID3:porcentaje) [
+        print (ID3:porcentaje)
+        let valorElegido first rnd:weighted-one-of-list ID3:porcentaje last
+        report valorElegido
+      ]
+      report ID3:value]
+    [
+      let val ID3:value-of ID3:value datum
+      let next-branch my-out-ID3:links with [ID3:att_value = val]
+      ;show next-branch
+      ifelse any? next-branch 
+        [
+          let next-node [end2] of one-of next-branch
+          report [ID3:evaluate datum] of next-node
+      ]
+      [
+        report "ID3:Failure"
+      ]
+    ]
+  ]
+end
+
+; Take the value of attribute att in datum dat.
+; The structure of d must be: [[att1 v1] [att2 v2] ...]
+to-report ID3:value-of [att dat]
+  let fil filter [x -> first x = att] dat
+  ifelse not empty? fil
+  [
+    report last first fil
+  ]
+  [ 
+    report "ID3:Failure"
+  ]
+end
+
+; Transform the attributes from Latt (numerical) into a set of 
+; categorical attributes (of the form "att <= val")
+to-report ID3:num2att [df Latt]
+  foreach Latt [
+    att ->
+    let vals sort DF:values df att
+    foreach vals [
+      v -> 
+      set df DF:add-calculated-column (word att "<=" v) df [r -> (DF:value att df r <= v)]
+    ]
+    set df DF:remove att df
+  ]
+  report df
+end
